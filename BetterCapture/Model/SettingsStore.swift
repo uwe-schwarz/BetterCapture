@@ -145,6 +145,7 @@ enum AudioCodec: String, CaseIterable, Identifiable {
 /// Frame rate options for recording
 enum FrameRate: Int, CaseIterable, Identifiable {
     case native = 0
+    case fps1 = 1
     case fps24 = 24
     case fps30 = 30
     case fps60 = 60
@@ -244,11 +245,13 @@ final class SettingsStore {
     // MARK: - Dependencies
 
     private let defaults: UserDefaults
+    var meetingCapture: MeetingCaptureSettings
 
     // MARK: - Initialization
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.meetingCapture = MeetingCaptureSettings(defaults: defaults)
     }
 
     // MARK: - Video Settings
@@ -401,7 +404,7 @@ final class SettingsStore {
     /// Both ``CaptureEngine`` and ``AssetWriter`` use this to ensure the
     /// stream configuration and output color tags stay in sync.
     var hdrPreset: HDRPreset {
-        guard captureHDR && videoCodec.supportsHDR else { return .sdr }
+        guard meetingCapture.recordingMode == .video, captureHDR && videoCodec.supportsHDR else { return .sdr }
         if #available(macOS 26, *) {
             return .hdr10PreservedSDR
         }
@@ -745,6 +748,10 @@ final class SettingsStore {
 
     /// Returns the full output URL for a new recording
     func generateOutputURL() -> URL {
-        outputDirectory.appending(path: generateFilename())
+        if meetingCapture.recordingMode == .screenshots {
+            let name = URL(filePath: generateFilename()).deletingPathExtension().lastPathComponent
+            return outputDirectory.appending(path: "\(name)-\(UUID().uuidString.prefix(8))-screenshots", directoryHint: .isDirectory)
+        }
+        return outputDirectory.appending(path: generateFilename())
     }
 }

@@ -14,7 +14,7 @@ import VideoToolbox
 import os
 
 /// Service responsible for writing captured media to disk using AVAssetWriter
-final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
+nonisolated final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
 
     // MARK: - Properties
 
@@ -59,6 +59,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     /// waiting for the writer to accept it.
     private var pendingPixelBuffer: CVPixelBuffer?
     private var pendingIndex = -1
+    private var lastCaptureTime: CMTime = .invalid
 
     /// Set when the recording is stopping, so the drain loop closes the video input
     /// once it has written everything queued.
@@ -99,7 +100,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     ///   - url: The output file URL
     ///   - settings: The settings store containing encoding configuration
     ///   - videoSize: The dimensions of the video
-    func setup(url: URL, settings: SettingsStore, videoSize: CGSize) throws {
+    @MainActor
+    func setup(url: URL, settings: SettingsStore, videoSize: CGSize, includeVideo: Bool = true) throws {
         // Ensure output directory exists
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -110,7 +112,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         }
 
         // Create asset writer
-        let fileType = settings.containerFormat == .mov ? AVFileType.mov : AVFileType.mp4
+        let fileType = !includeVideo || settings.containerFormat == .mov ? AVFileType.mov : AVFileType.mp4
         assetWriter = try AVAssetWriter(outputURL: url, fileType: fileType)
 
         guard let assetWriter else {
@@ -121,33 +123,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         // also the interval CaptureEngine configures for it.
         gridFrameRate = CMTimeScale(settings.frameRate.effectiveFrameRate)
 
-        // Configure video input
-        let videoSettings = AssetWriterSettings.video(from: settings, size: videoSize)
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput?.expectsMediaDataInRealTime = true
-        // 600 is evenly divisible by every supported frame rate, so grid times are
-        // representable exactly and no rounding is introduced by the writer.
-        videoInput?.mediaTimeScale = 600
-
-        if let videoInput, assetWriter.canAdd(videoInput) {
-            assetWriter.add(videoInput)
-
-            // Create pixel buffer adaptor for appending raw pixel buffers from ScreenCaptureKit.
-            // Must match the pixel format configured on SCStreamConfiguration in CaptureEngine.
-            let pixelFormat: OSType =
-                (settings.captureHDR && settings.videoCodec.supportsHDR)
-                ? settings.videoCodec.hdrPixelFormat
-                : kCVPixelFormatType_32BGRA
-
-            let sourcePixelBufferAttributes: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-                kCVPixelBufferWidthKey as String: Int(videoSize.width),
-                kCVPixelBufferHeightKey as String: Int(videoSize.height)
-            ]
-            pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: videoInput,
-                sourcePixelBufferAttributes: sourcePixelBufferAttributes
-            )
+        if includeVideo {
+            configureVideo(settings: settings, size: videoSize, writer: assetWriter)
         }
 
         // Configure audio input for system audio
@@ -184,10 +161,41 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         logger.info("AssetWriter configured for output: \(url.lastPathComponent)")
     }
 
+    @MainActor
+    private func configureVideo(settings: SettingsStore, size videoSize: CGSize, writer assetWriter: AVAssetWriter) {
+        let videoSettings = AssetWriterSettings.video(from: settings, size: videoSize)
+        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoInput?.expectsMediaDataInRealTime = true
+        // 600 is evenly divisible by every supported frame rate, so grid times are
+        // representable exactly and no rounding is introduced by the writer.
+        videoInput?.mediaTimeScale = 600
+
+        if let videoInput, assetWriter.canAdd(videoInput) {
+            assetWriter.add(videoInput)
+
+            // Create pixel buffer adaptor for appending raw pixel buffers from ScreenCaptureKit.
+            // Must match the pixel format configured on SCStreamConfiguration in CaptureEngine.
+            let pixelFormat: OSType =
+                (settings.captureHDR && settings.videoCodec.supportsHDR)
+                ? settings.videoCodec.hdrPixelFormat
+                : kCVPixelFormatType_32BGRA
+
+            let sourcePixelBufferAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+                kCVPixelBufferWidthKey as String: Int(videoSize.width),
+                kCVPixelBufferHeightKey as String: Int(videoSize.height)
+            ]
+            pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+                assetWriterInput: videoInput,
+                sourcePixelBufferAttributes: sourcePixelBufferAttributes
+            )
+        }
+    }
+
     // MARK: - Writing
 
     /// Starts the writing session
-    func startWriting() throws {
+    func startWriting(at anchor: CMTime = .invalid) throws {
         guard let assetWriter, assetWriter.status == .unknown else {
             throw AssetWriterError.writerNotReady
         }
@@ -195,6 +203,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         guard assetWriter.startWriting() else {
             throw AssetWriterError.failedToStartWriting(assetWriter.error)
         }
+
+        sessionAnchor = anchor
 
         // Pull frames whenever the encoder drains. Without this a stall longer than one
         // burst would be left half-filled, because the capture source has nothing to
@@ -240,7 +250,13 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             // frames inside a single slot, and Presenter Overlay can emit an outright
             // non-monotonic timestamp, which permanently fails the writer.
             let index = gridIndex(for: presentationTime)
-            guard index > pendingIndex else { return }
+            if gridFrameRate == 1 {
+                // The clock may already have filled this second with the old image.
+                // Still retain newer content for the next slot.
+                guard !lastCaptureTime.isNumeric || presentationTime > lastCaptureTime else { return }
+            } else {
+                guard index > pendingIndex else { return }
+            }
 
             // Extract pixel buffer from sample buffer
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
@@ -268,7 +284,11 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             // only accepts a short burst before `isReadyForMoreMediaData` goes false,
             // and appending past that point wedges it.
             pendingPixelBuffer = pixelBuffer
-            pendingIndex = index
+            lastCaptureTime = presentationTime
+            if gridFrameRate == 1 && index <= lastFrameIndex {
+                lastPixelBuffer = pixelBuffer
+            }
+            pendingIndex = max(pendingIndex, index)
         }
 
         drainVideo()
@@ -329,6 +349,9 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     /// Skips ahead when a stall is longer than the fill cap, so a capture source that
     /// went away for minutes cannot make the drain loop write thousands of frames.
     private func capFillIfStalled() {
+        // Meeting recordings need a complete timeline even when a slide stays still
+        // for minutes. At one frame per second, filling these gaps stays inexpensive.
+        guard gridFrameRate != 1 else { return }
         let maximumFill = Int(gridFrameRate) * Self.maximumFillSeconds
         let missing = pendingIndex - lastFrameIndex
         guard missing > maximumFill else { return }
@@ -392,17 +415,31 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     private func startSessionIfNeeded(at presentationTime: CMTime) {
         guard !hasStartedSession, let assetWriter else { return }
 
-        sessionAnchor = presentationTime
+        if !sessionAnchor.isNumeric {
+            sessionAnchor = presentationTime
+        }
         hasStartedSession = true
         assetWriter.startSession(atSourceTime: .zero)
-        logger.info("Session anchored at capture time: \(presentationTime.seconds)")
+        logger.info("Session anchored at capture time: \(self.sessionAnchor.seconds)")
     }
 
     /// Converts a capture timestamp into an index on the constant frame rate grid.
     private func gridIndex(for presentationTime: CMTime) -> Int {
         let elapsed = (presentationTime - sessionAnchor).seconds
         guard elapsed.isFinite else { return lastFrameIndex + 1 }
-        return max(0, Int((elapsed * Double(gridFrameRate)).rounded()))
+        let rounding: FloatingPointRoundingRule = gridFrameRate == 1 ? .down : .toNearestOrAwayFromZero
+        return max(0, Int((elapsed * Double(gridFrameRate)).rounded(rounding)))
+    }
+
+    /// Extends a 1 fps recording through a static screen, including its final seconds.
+    /// Called by the recording timer and once after the capture stream stops.
+    func advanceVideo(to presentationTime: CMTime) {
+        lock.withLockUnchecked {
+            guard gridFrameRate == 1, hasStartedSession, !isFinishingVideo,
+                  assetWriter?.status == .writing, pendingPixelBuffer != nil else { return }
+            pendingIndex = max(pendingIndex, gridIndex(for: presentationTime))
+        }
+        drainVideo()
     }
 
     /// Writes silence covering the gap between the session anchor and this track's
@@ -509,6 +546,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         lastPixelBuffer = nil
         pendingPixelBuffer = nil
         pendingIndex = -1
+        lastCaptureTime = .invalid
         isFinishingVideo = false
         videoInputFinished = false
         hasLoggedFirstFrame = false

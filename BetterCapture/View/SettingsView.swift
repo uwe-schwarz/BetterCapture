@@ -20,7 +20,7 @@ struct SettingsView: View {
                 GeneralSettingsView(settings: settings, updaterService: updaterService)
             }
 
-            Tab("Video", systemImage: "video") {
+            Tab("Recording", systemImage: "record.circle") {
                 VideoSettingsView(settings: settings)
             }
 
@@ -100,49 +100,64 @@ struct VideoSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Recording") {
-                Picker("Frame Rate", selection: $settings.frameRate) {
-                    ForEach(FrameRate.allCases) { rate in
-                        Text(rate.displayName).tag(rate)
+            Section("Output") {
+                Picker("Record", selection: $settings.meetingCapture.recordingMode) {
+                    ForEach(RecordingMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
                     }
                 }
+                if settings.meetingCapture.recordingMode == .screenshots {
+                    ScreenshotSettingsView(settings: settings.meetingCapture)
+                }
+            }
 
-                Picker("Codec", selection: $settings.videoCodec) {
-                    ForEach(VideoCodec.allCases) { codec in
-                        let isSupported = settings.containerFormat.supportedVideoCodecs.contains(codec)
-                        if isSupported {
-                            Text(codec.rawValue).tag(codec)
-                        } else {
-                            Text("\(codec.rawValue) (not supported for \(settings.containerFormat.rawValue.uppercased()))")
-                                .foregroundStyle(.secondary)
-                                .tag(codec)
+            if settings.meetingCapture.recordingMode == .video {
+                Section("Recording") {
+                    Picker("Frame Rate", selection: $settings.frameRate) {
+                        ForEach(FrameRate.allCases) { rate in
+                            Text(rate.displayName).tag(rate)
                         }
                     }
-                }
 
-                Picker("Container", selection: $settings.containerFormat) {
-                    ForEach(ContainerFormat.allCases) { format in
-                        Text(".\(format.rawValue)").tag(format)
+                    Picker("Codec", selection: $settings.videoCodec) {
+                        ForEach(VideoCodec.allCases) { codec in
+                            let isSupported = settings.containerFormat.supportedVideoCodecs.contains(codec)
+                            if isSupported {
+                                Text(codec.rawValue).tag(codec)
+                            } else {
+                                Text("\(codec.rawValue) (not supported for \(settings.containerFormat.rawValue.uppercased()))")
+                                    .foregroundStyle(.secondary)
+                                    .tag(codec)
+                            }
+                        }
                     }
-                }
 
-                Picker("Quality", selection: $settings.videoQuality) {
-                    ForEach(VideoQuality.allCases) { quality in
-                        Text(quality.rawValue).tag(quality)
+                    Picker("Container", selection: $settings.containerFormat) {
+                        ForEach(ContainerFormat.allCases) { format in
+                            Text(".\(format.rawValue)").tag(format)
+                        }
                     }
+
+                    Picker("Quality", selection: $settings.videoQuality) {
+                        ForEach(VideoQuality.allCases) { quality in
+                            Text(quality.rawValue).tag(quality)
+                        }
+                    }
+                    .disabled(!settings.videoCodec.supportsQualitySetting)
+                    .help(qualityHelpText)
                 }
-                .disabled(!settings.videoCodec.supportsQualitySetting)
-                .help(qualityHelpText)
             }
 
             Section("Advanced") {
-                Toggle("Capture Alpha Channel", isOn: $settings.captureAlphaChannel)
-                    .disabled(!settings.videoCodec.canToggleAlpha || !settings.containerFormat.supportsAlphaChannel)
-                    .help(alphaChannelHelpText)
+                if settings.meetingCapture.recordingMode == .video {
+                    Toggle("Capture Alpha Channel", isOn: $settings.captureAlphaChannel)
+                        .disabled(!settings.videoCodec.canToggleAlpha || !settings.containerFormat.supportsAlphaChannel)
+                        .help(alphaChannelHelpText)
 
-                Toggle("HDR Recording", isOn: $settings.captureHDR)
-                    .disabled(!settings.videoCodec.supportsHDR)
-                    .help(hdrHelpText)
+                    Toggle("HDR Recording", isOn: $settings.captureHDR)
+                        .disabled(!settings.videoCodec.supportsHDR)
+                        .help(hdrHelpText)
+                }
 
                 Toggle("Native Resolution", isOn: $settings.captureNativeResolution)
                     .help(captureNativeResHelpText)
@@ -184,7 +199,7 @@ struct AudioSettingsView: View {
             Section("Format") {
                 Picker("Codec", selection: $settings.audioCodec) {
                     ForEach(AudioCodec.allCases) { codec in
-                        let isSupported = settings.containerFormat.supportedAudioCodecs.contains(codec)
+                        let isSupported = settings.meetingCapture.recordingMode == .screenshots || settings.containerFormat.supportedAudioCodecs.contains(codec)
                         if isSupported {
                             Text(codec.rawValue).tag(codec)
                         } else {

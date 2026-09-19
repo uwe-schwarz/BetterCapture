@@ -28,6 +28,7 @@
 - **Native macOS integration**: Built with SwiftUI and ScreenCaptureKit, lives in your menu bar
 - **Professional encoding**: ProRes 422/4444, HEVC (H.265), and H.264 codecs with support for alpha channel and HDR
 - **Flexible audio capture**: Record system audio and microphone simultaneously
+- **Meeting recording**: Record video at 1 fps, or save screenshots at fixed intervals or only when content changes, with optional continuous audio
 - **Content filtering**: Exclude specific content from recordings
 - **Privacy-focused**: No tracking, no analytics, all recordings stored locally
 - **MIT licensed**: Free and open source
@@ -45,6 +46,40 @@ brew install bettercapture
 Download the latest release from [GitHub Releases](https://github.com/jsattler/BetterCapture/releases/latest) and open `BetterCapture.dmg`.
 
 **Requirements**: macOS 15.2 (Sequoia) or later
+
+## Meeting Recording
+
+In the menu bar, keep **Output → Video** and select **Frame Rate → 1 fps** for
+meetings with mostly static content. Audio stays at its normal sample rate. The
+video repeats the last image during static periods and extends through the end of
+the recording, rounded up to a whole second.
+
+Select **Output → Screenshots** to save PNG images instead of a video track:
+
+- **Fixed Interval** saves the first available image, then an image every 1–3600
+  seconds (5 seconds by default), including unchanged screens.
+- **Only Changes** checks at the same configurable interval and saves significant
+  changes relative to the last saved image. Returning to an earlier slide is saved
+  again. Select the shared window or slide area to reduce unrelated camera motion.
+
+Each session creates a unique folder in the selected output location containing
+PNG images, `screenshots.jsonl` (one filename and timestamp in seconds per line),
+and `recording.json` (duration and settings). If enabled, system audio and microphone
+are saved as separate tracks in `audio.mov`, using the selected audio codec.
+Image timestamps and audio share the same recording origin. With both audio
+sources disabled, the folder contains only images and metadata.
+
+Screenshots use SDR and honor the selected content, resolution, and content
+filters. Video codec, HDR, and alpha settings apply to video recordings. No image
+is saved while the capture source reports itself unavailable. Checks delayed by
+sleep or slow storage skip missed intervals instead of creating a burst of images.
+
+The change detector follows the grayscale/content-mask approach in
+`meeting-transcribe`: compare images at up to 640 pixels wide, ignore brightness
+differences below 24/255, and save when at least 30% of the image changes. Bright
+document regions use a 2% threshold to retain smaller text edits while usually
+ignoring camera tiles. These are visual heuristics; tiny edits, brief transitions
+between checks, or color changes with similar brightness may be missed.
 
 ## Automation
 

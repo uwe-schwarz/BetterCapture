@@ -81,6 +81,7 @@ final class RecorderViewModel {
     let permissionService: PermissionService
     private let captureEngine: CaptureEngine
     private let assetWriter: AssetWriter
+    private var screenshotRecorder: ScreenshotRecorder?
     private let cameraSession = CameraSession()
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "RecorderViewModel")
@@ -258,10 +259,7 @@ final class RecorderViewModel {
             _ = settings.startAccessingOutputDirectory()
 
             // Setup asset writer
-            let outputURL = settings.generateOutputURL()
-            try assetWriter.setup(url: outputURL, settings: settings, videoSize: videoSize)
-            try assetWriter.startWriting()
-            logger.info("AssetWriter ready")
+            try setupRecordingOutput()
 
             // Start camera for Presenter Overlay before capture so the system detects it.
             // The camera has to be running before the SCStream starts, which is earlier than
@@ -277,6 +275,10 @@ final class RecorderViewModel {
             // Start capture with the calculated video size
             logger.info("Starting capture engine...")
             try await captureEngine.startCapture(with: settings, videoSize: videoSize, sourceRect: selectedSourceRect)
+
+            screenshotRecorder?.startSampling { [weak self] _ in
+                Task { await self?.stopRecording() }
+            }
 
             // Re-show the area selection border now that capture has started
             if isAreaSelection, let screenRect = selectedScreenRect {
@@ -297,6 +299,9 @@ final class RecorderViewModel {
             // The writer may already be set up and holding an empty output file. Cancel it
             // before releasing the output directory, since that is where the file lives.
             assetWriter.cancel()
+            await screenshotRecorder?.cancel()
+            screenshotRecorder = nil
+            captureEngine.sampleBufferDelegate = assetWriter
             settings.stopAccessingOutputDirectory()
 
             // lastError has no UI representation, so every start failure has to be surfaced
@@ -323,12 +328,17 @@ final class RecorderViewModel {
 
         do {
             // Stop capture and camera session
-            try await captureEngine.stopCapture()
+            do {
+                try await captureEngine.stopCapture()
+            } catch {
+                lastError = error
+                logger.error("Capture stop failed; finalizing recorded media: \(error.localizedDescription)")
+            }
             cameraSession.stop()
             isPresenterOverlayActive = false
 
             // Finalize file
-            let (outputURL, videoFrameCount) = try await assetWriter.finishWriting()
+            let (outputURL, videoFrameCount) = try await finishRecordingOutput()
 
             state = .idle
             recordingDuration = 0
@@ -357,6 +367,9 @@ final class RecorderViewModel {
             state = .idle
             lastError = error
             assetWriter.cancel()
+            // A screenshot failure keeps completed images and any finalized audio.
+            screenshotRecorder = nil
+            captureEngine.sampleBufferDelegate = assetWriter
             settings.stopAccessingOutputDirectory()
             notificationService.sendRecordingFailedNotification(error: error)
             logger.error("Failed to stop recording: \(error.localizedDescription)")
@@ -388,26 +401,6 @@ final class RecorderViewModel {
     /// Stops the live preview stream (call when menu bar window closes)
     func stopPreview() async {
         await previewService.stopPreview()
-    }
-
-    // MARK: - Timer Management
-
-    private func startTimer() {
-        recordingStartTime = Date()
-        recordingDuration = 0
-
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, let startTime = self.recordingStartTime else { return }
-                self.recordingDuration = Date().timeIntervalSince(startTime)
-            }
-        }
-    }
-
-    private func stopTimer() {
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        recordingStartTime = nil
     }
 
     // MARK: - Helper Methods
@@ -577,5 +570,59 @@ extension RecorderViewModel: PreviewServiceDelegate {
         // Clear the content filter in capture engine and deactivate picker
         captureEngine.clearSelection()
         captureEngine.deactivatePicker()
+    }
+}
+
+// MARK: - Recording output and clock
+
+extension RecorderViewModel {
+
+    private func setupRecordingOutput() throws {
+        let outputURL = settings.generateOutputURL()
+        if settings.meetingCapture.recordingMode == .screenshots {
+            let recorder = try ScreenshotRecorder(directory: outputURL, settings: settings)
+            screenshotRecorder = recorder
+            captureEngine.sampleBufferDelegate = recorder
+        } else {
+            captureEngine.sampleBufferDelegate = assetWriter
+            try assetWriter.setup(url: outputURL, settings: settings, videoSize: videoSize)
+            try assetWriter.startWriting()
+        }
+    }
+
+    private func finishRecordingOutput() async throws -> (URL, Int) {
+        let outputURL: URL
+        let videoFrameCount: Int
+        if let screenshotRecorder {
+            videoFrameCount = try await screenshotRecorder.finishWriting()
+            outputURL = screenshotRecorder.directory
+            self.screenshotRecorder = nil
+        } else {
+            assetWriter.advanceVideo(to: CMClockGetTime(CMClockGetHostTimeClock()))
+            (outputURL, videoFrameCount) = try await assetWriter.finishWriting()
+        }
+        captureEngine.sampleBufferDelegate = assetWriter
+        return (outputURL, videoFrameCount)
+    }
+
+    private func startTimer() {
+        recordingStartTime = Date()
+        recordingDuration = 0
+
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let startTime = self.recordingStartTime else { return }
+                self.recordingDuration = Date().timeIntervalSince(startTime)
+                if self.screenshotRecorder == nil {
+                    self.assetWriter.advanceVideo(to: CMClockGetTime(CMClockGetHostTimeClock()))
+                }
+            }
+        }
+    }
+
+    private func stopTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recordingStartTime = nil
     }
 }

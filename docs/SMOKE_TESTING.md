@@ -34,6 +34,18 @@ This document outlines the manual testing matrix for BetterCapture. These tests 
 
 ## Test Coverage Summary
 
+### Meeting Recording
+
+| Test Case | Settings | Expected Result |
+| --- | --- | --- |
+| Static meeting video | 1 fps, H.264 or HEVC, system audio and microphone | A readable video with one frame per second, including more than 10 seconds of unchanged content and the final static tail; both audio tracks retain their full duration |
+| Fixed screenshots | Screenshots, Fixed Interval, 2 seconds | A session folder with timestamped PNGs every 2 seconds, even while the selected window stays unchanged; no video track |
+| Changed screenshots | Screenshots, Only Changes, 1 second | First image saved; repeated images and small cursor movement ignored; a new slide and a return to the first slide both saved |
+| Document edits | Only Changes; a bright document plus a small camera tile | Text changes saved; movement confined to the camera tile usually ignored |
+| Screenshot audio | Screenshots with system audio, microphone, both, then neither | Enabled sources become separate tracks in audio.mov; no audio file when both sources are disabled; timestamps match the audio timeline |
+| Source and error handling | Screenshots, window/area/display; stop sharing or interrupt the source | Correct content and resolution; no stale images while unavailable; completed images and finalized audio survive a write failure |
+| Settings persistence | Switch output modes and restart | Mode, interval, and screenshot policy persist; previous video codec and HDR choices remain available when returning to video |
+
 ### Content Sources (3 types)
 
 - **Full Display**: Tests 1, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 20, 21

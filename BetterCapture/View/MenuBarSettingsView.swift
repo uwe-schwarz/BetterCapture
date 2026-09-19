@@ -433,7 +433,13 @@ struct VideoSettingsSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SectionHeader(title: "Video")
+            SectionHeader(title: "Recording")
+
+            MenuBarExpandablePicker(
+                name: "Output",
+                selection: $settings.meetingCapture.recordingMode,
+                options: RecordingMode.allCases.map { ($0, $0.rawValue) }
+            )
 
             // Content Filter Section
             MenuBarExpandableSection(title: "Content Filter") {
@@ -445,48 +451,53 @@ struct VideoSettingsSection: View {
                 MenuBarToggle(name: "Show BetterCapture", isOn: $settings.showBetterCapture)
             }
 
-            // Frame Rate Picker
-            MenuBarExpandablePicker(
-                name: "Frame Rate",
-                selection: $settings.frameRate,
-                options: FrameRate.allCases.map { ($0, $0.displayName) }
-            )
+            if settings.meetingCapture.recordingMode == .screenshots {
+                ScreenshotSettingsView(settings: settings.meetingCapture)
+                    .padding(.horizontal)
+            } else {
+                // Frame Rate Picker
+                MenuBarExpandablePicker(
+                    name: "Frame Rate",
+                    selection: $settings.frameRate,
+                    options: FrameRate.allCases.map { ($0, $0.displayName) }
+                )
 
-            // Video Codec Picker (shows all codecs, disables incompatible ones)
-            MenuBarExpandablePicker(
-                name: "Codec",
-                selection: $settings.videoCodec,
-                optionsWithState: VideoCodec.allCases.map { codec in
-                    let isSupported = settings.containerFormat.supportedVideoCodecs.contains(codec)
-                    return PickerOption(
-                        value: codec,
-                        label: codec.rawValue,
-                        isDisabled: !isSupported,
-                        disabledMessage: isSupported ? nil : "Not supported for \(settings.containerFormat.rawValue.uppercased())"
-                    )
-                }
-            )
+                // Video Codec Picker (shows all codecs, disables incompatible ones)
+                MenuBarExpandablePicker(
+                    name: "Codec",
+                    selection: $settings.videoCodec,
+                    optionsWithState: VideoCodec.allCases.map { codec in
+                        let isSupported = settings.containerFormat.supportedVideoCodecs.contains(codec)
+                        return PickerOption(
+                            value: codec,
+                            label: codec.rawValue,
+                            isDisabled: !isSupported,
+                            disabledMessage: isSupported ? nil : "Not supported for \(settings.containerFormat.rawValue.uppercased())"
+                        )
+                    }
+                )
 
-            // Container Format Picker
-            MenuBarExpandablePicker(
-                name: "Container",
-                selection: $settings.containerFormat,
-                options: ContainerFormat.allCases.map { ($0, $0.rawValue.uppercased()) }
-            )
+                // Container Format Picker
+                MenuBarExpandablePicker(
+                    name: "Container",
+                    selection: $settings.containerFormat,
+                    options: ContainerFormat.allCases.map { ($0, $0.rawValue.uppercased()) }
+                )
 
-            // Alpha Channel Toggle (disabled if codec doesn't support or container doesn't support)
-            MenuBarToggle(
-                name: "Capture Alpha Channel",
-                isOn: $settings.captureAlphaChannel,
-                isDisabled: !settings.videoCodec.canToggleAlpha || !settings.containerFormat.supportsAlphaChannel
-            )
+                // Alpha Channel Toggle (disabled if codec doesn't support or container doesn't support)
+                MenuBarToggle(
+                    name: "Capture Alpha Channel",
+                    isOn: $settings.captureAlphaChannel,
+                    isDisabled: !settings.videoCodec.canToggleAlpha || !settings.containerFormat.supportsAlphaChannel
+                )
 
-            // HDR Recording Toggle (disabled for codecs that don't support HDR)
-            MenuBarToggle(
-                name: "HDR Recording",
-                isOn: $settings.captureHDR,
-                isDisabled: !settings.videoCodec.supportsHDR
-            )
+                // HDR Recording Toggle (disabled for codecs that don't support HDR)
+                MenuBarToggle(
+                    name: "HDR Recording",
+                    isOn: $settings.captureHDR,
+                    isDisabled: !settings.videoCodec.supportsHDR
+                )
+            }
         }
     }
 }
@@ -524,7 +535,7 @@ struct AudioSettingsSection: View {
                 name: "Audio Codec",
                 selection: $settings.audioCodec,
                 optionsWithState: AudioCodec.allCases.map { codec in
-                    let isSupported = settings.containerFormat.supportedAudioCodecs.contains(codec)
+                    let isSupported = settings.meetingCapture.recordingMode == .screenshots || settings.containerFormat.supportedAudioCodecs.contains(codec)
                     return PickerOption(
                         value: codec,
                         label: codec.rawValue,
