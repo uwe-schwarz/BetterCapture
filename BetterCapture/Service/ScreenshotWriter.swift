@@ -71,7 +71,7 @@ actor ScreenshotWriter {
             "audioFile": audioTracks.isEmpty ? NSNull() : "audio.mov",
             "audioTracks": audioTracks,
             "timestampOrigin": "recording-start",
-            "changeDetection": "last-saved-percentage-content-mask-v1"
+            "changeDetection": "last-saved-local-content-mask-v2"
         ]
         let data = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: directory.appending(path: "recording.json"), options: .atomic)

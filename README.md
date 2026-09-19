@@ -74,12 +74,14 @@ filters. Video codec, HDR, and alpha settings apply to video recordings. No imag
 is saved while the capture source reports itself unavailable. Checks delayed by
 sleep or slow storage skip missed intervals instead of creating a burst of images.
 
-The change detector follows the grayscale/content-mask approach in
-`meeting-transcribe`: compare images at up to 640 pixels wide, ignore brightness
-differences below 24/255, and save when at least 30% of the image changes. Bright
-document regions use a 2% threshold to retain smaller text edits while usually
-ignoring camera tiles. These are visual heuristics; tiny edits, brief transitions
-between checks, or color changes with similar brightness may be missed.
+The change detector compares grayscale images at up to 640 pixels wide and ignores
+brightness differences below 24/255. It identifies text against locally uniform
+backgrounds in light and dark themes, including a browser shared inside a meeting
+window. A 2% change within those content regions saves an image, provided at least
+0.2% of the whole image changes; that minimum filters cursor-sized changes. Large
+scene changes affecting at least 30% of the image are also saved. These are visual
+heuristics; camera motion can still trigger captures, and tiny edits, brief
+transitions between checks, or color changes with similar brightness may be missed.
 
 ## Automation
 

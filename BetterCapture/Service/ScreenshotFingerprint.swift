@@ -1,13 +1,11 @@
 import CoreGraphics
 import Foundation
 
-/// A bounded grayscale comparison, based on meeting-transcribe's content masks.
-/// Bright document regions use a lower threshold so small text edits count, while
-/// camera tiles and cursor-sized changes usually do not.
+/// A bounded grayscale comparison of text on locally uniform backgrounds.
+/// Content masks work in either theme, even inside a larger meeting window.
 nonisolated struct ScreenshotFingerprint: Sendable {
     let width: Int
     let pixels: [UInt8]
-    private let isDocument: Bool
     private let documentMask: [Bool]
 
     init(image: CGImage) throws {
@@ -32,13 +30,11 @@ nonisolated struct ScreenshotFingerprint: Sendable {
         precondition(width > 0 && !pixels.isEmpty && pixels.count.isMultiple(of: width))
         self.width = width
         self.pixels = pixels
-        isDocument = Double(pixels.filter { $0 >= 235 }.count) / Double(pixels.count) > 0.5
-        documentMask = isDocument ? Self.makeDocumentMask(width: width, pixels: pixels) : []
+        documentMask = Self.makeDocumentMask(width: width, pixels: pixels)
     }
 
     func differsSignificantly(from previous: Self) -> Bool {
-        guard width == previous.width, pixels.count == previous.pixels.count,
-              isDocument == previous.isDocument else { return true }
+        guard width == previous.width, pixels.count == previous.pixels.count else { return true }
 
         var globalChanges = 0
         var documentChanges = 0
@@ -46,15 +42,17 @@ nonisolated struct ScreenshotFingerprint: Sendable {
         for index in pixels.indices {
             let changed = abs(Int(pixels[index]) - Int(previous.pixels[index])) >= 24
             if changed { globalChanges += 1 }
-            if isDocument && documentMask[index] && previous.documentMask[index] {
+            // Include newly occupied and cleared text regions when scrolling.
+            if documentMask[index] || previous.documentMask[index] {
                 comparedPixels += 1
                 if changed { documentChanges += 1 }
             }
         }
 
         if Double(globalChanges) / Double(pixels.count) >= 0.30 { return true }
-        guard isDocument else { return false }
-        return comparedPixels == 0 || Double(documentChanges) / Double(comparedPixels) >= 0.02
+        // A cursor on an otherwise blank page must not become the entire comparison.
+        guard Double(documentChanges) / Double(pixels.count) >= 0.002, comparedPixels > 0 else { return false }
+        return Double(documentChanges) / Double(comparedPixels) >= 0.02
     }
 
     private static func makeDocumentMask(width: Int, pixels: [UInt8]) -> [Bool] {
@@ -65,13 +63,23 @@ nonisolated struct ScreenshotFingerprint: Sendable {
             for left in stride(from: 0, to: width, by: tile) {
                 let bottom = min(top + tile, height)
                 let right = min(left + tile, width)
-                var bright = 0
+                var histogram = [Int](repeating: 0, count: 16)
                 for row in top..<bottom {
-                    for column in left..<right where pixels[row * width + column] >= 235 {
-                        bright += 1
+                    for column in left..<right {
+                        histogram[Int(pixels[row * width + column]) / 16] += 1
                     }
                 }
-                guard Double(bright) / Double((bottom - top) * (right - left)) >= 0.80 else { continue }
+                let dominant = histogram.indices.max { histogram[$0] < histogram[$1] } ?? 0
+                let background = dominant * 16 + 8
+                var foreground = 0
+                for row in top..<bottom {
+                    for column in left..<right where abs(Int(pixels[row * width + column]) - background) >= 24 {
+                        foreground += 1
+                    }
+                }
+                // Text has a dominant background and sparse contrasting strokes.
+                // Blank tiles and most photographic regions do not contribute.
+                guard foreground > 0, Double(foreground) / Double((bottom - top) * (right - left)) <= 0.20 else { continue }
                 for row in top..<bottom {
                     for column in left..<right { mask[row * width + column] = true }
                 }
